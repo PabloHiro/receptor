@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ansible/receptor/pkg/netceptor"
+	"github.com/ansible/receptor/pkg/netceptor/internal"
 	"github.com/ansible/receptor/pkg/netceptor/mock_netceptor"
 	"github.com/quic-go/quic-go"
 	"go.uber.org/mock/gomock"
@@ -231,4 +232,15 @@ func TestSetWriteDeadline(t *testing.T) {
 			t.Errorf("Wanted %v, got %v", wantErr, gotErr)
 		}
 	})
+}
+
+func TestListen(t *testing.T) {
+	hosts := []string{"127.0.0.1", "1.2.3.4:5000", "::1", "[::1]:2000", "1:2:3:4:5:6:7:8", "[1:2:3:4:5:6:7:8]:9000"}
+	netceptorNode := netceptor.New(context.Background(), "node")
+	for _, host := range hosts {
+		t.Run(host, func(t *testing.T) {
+			tlsConfig := GenerateServerTLSConfig(host)
+			netceptorNode.Listen(host, tlsConfig.Clone())
+		})
+	}
 }
