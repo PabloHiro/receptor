@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	netceptorint "github.com/ansible/receptor/pkg/netceptor/internal"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/logging"
 	"github.com/quic-go/quic-go/qlog"
@@ -33,6 +34,15 @@ type QuicConnectionForConn interface {
 	quic.Connection
 }
 
+type TLSConfigForConn interface {
+	GetConfigForClient(hi *tls.ClientHelloInfo) (*tls.Config, error)
+}
+
+type TLSConfigForConnWrapper struct {
+	s              *Netceptor
+	outerTLSConfig *tls.Config
+}
+
 type AcceptResult struct {
 	Conn net.Conn
 	Err  error
@@ -50,8 +60,25 @@ type Listener struct {
 
 const insecureCommonName = "netceptor-insecure-common-name"
 
+// GetConfigForClient is a monkwy patched version of tls.Config.GetConfigForClient()
+func (tcw *TLSConfigForConnWrapper) GetConfigForClient(hi *tls.ClientHelloInfo) (*tls.Config, error) {
+	clientTLSCfg := tcw.outerTLSConfig.Clone()
+	remoteAddr := hi.Conn.RemoteAddr().String()
+	remoteNode, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return nil, fmt.Errorf("%s is not a valid IP address + port", remoteAddr)
+	}
+	if strings.Contains(remoteNode, ":") {
+		remoteNode = strings.Trim(remoteNode, "[]")
+	}
+	clientTLSCfg.VerifyPeerCertificate = ReceptorVerifyFunc(tcw.outerTLSConfig, [][]byte{}, remoteNode, ExpectedHostnameTypeReceptor, VerifyClient, tcw.s.Logger)
+
+	return clientTLSCfg, nil
+
+}
+
 // Internal implementation of Listen and ListenAndAdvertise.
-func (s *Netceptor) listen(ctx context.Context, service string, tlscfg *tls.Config, advertise bool, adTags map[string]string) (*Listener, error) {
+func (s *Netceptor) listen(ctx context.Context, service string, tlscfg *tls.Config, advertise bool, adTags map[string]string, tlscfgwrapper *TLSConfigForConnWrapper) (*Listener, error) {
 	if len(service) > 8 {
 		return nil, fmt.Errorf("service name %s too long", service)
 	}
@@ -69,26 +96,14 @@ func (s *Netceptor) listen(ctx context.Context, service string, tlscfg *tls.Conf
 	var connType byte
 	if tlscfg == nil {
 		connType = ConnTypeStream
-		tlscfg = GenerateServerTLSConfig(insecureCommonName)
+		tlscfg = netceptorint.GenerateServerTLSConfig(insecureCommonName)
 	} else {
 		connType = ConnTypeStreamTLS
-		tlscfg = tlscfg.Clone()
+		tlscfgwrapper.outerTLSConfig = tlscfg
+		tlscfgwrapper.s = s
 		tlscfg.NextProtos = []string{"netceptor"}
 		if tlscfg.ClientAuth == tls.RequireAndVerifyClientCert {
-			tlscfg.GetConfigForClient = func(hi *tls.ClientHelloInfo) (*tls.Config, error) {
-				clientTLSCfg := tlscfg.Clone()
-				remoteAddr := hi.Conn.RemoteAddr().String()
-				remoteNode, _, err := net.SplitHostPort(remoteAddr)
-				if err != nil {
-					return nil, fmt.Errorf("%s is not a valid IP address + port", remoteAddr)
-				}
-				if strings.Contains(remoteNode, ":") {
-					remoteNode = strings.Trim(remoteNode, "[]")
-				}
-				clientTLSCfg.VerifyPeerCertificate = ReceptorVerifyFunc(tlscfg, [][]byte{}, remoteNode, ExpectedHostnameTypeReceptor, VerifyClient, s.Logger)
-
-				return clientTLSCfg, nil
-			}
+			tlscfg.GetConfigForClient = tlscfgwrapper.GetConfigForClient
 		}
 	}
 	pc := &PacketConn{
@@ -179,12 +194,12 @@ func (s *Netceptor) tracer(ctx context.Context, p logging.Perspective, connID qu
 // Listen returns a stream listener compatible with Go's net.Listener.
 // If service is blank, generates and uses an ephemeral service name.
 func (s *Netceptor) Listen(service string, tlscfg *tls.Config) (*Listener, error) {
-	return s.listen(s.context, service, tlscfg, false, nil)
+	return s.listen(s.context, service, tlscfg, false, nil, &TLSConfigForConnWrapper{})
 }
 
 // ListenAndAdvertise listens for stream connections on a service and also advertises it via broadcasts.
 func (s *Netceptor) ListenAndAdvertise(service string, tlscfg *tls.Config, tags map[string]string) (*Listener, error) {
-	return s.listen(s.context, service, tlscfg, true, tags)
+	return s.listen(s.context, service, tlscfg, true, tags, &TLSConfigForConnWrapper{})
 }
 
 func (li *Listener) sendResult(ctx context.Context, conn net.Conn, err error) {
@@ -256,6 +271,7 @@ func (li *Listener) acceptLoop(ctx context.Context) {
 			}
 			doneChan := make(chan struct{}, 1)
 			cctx, ccancel := context.WithCancel(li.s.context)
+			defer ccancel()
 			conn := &Conn{
 				s:        li.s,
 				pc:       li.pc,
@@ -365,7 +381,7 @@ func (s *Netceptor) DialContext(ctx context.Context, node string, service string
 	}
 
 	if tlscfg == nil {
-		tlscfg = GenerateClientTLSConfig(s.NodeID())
+		tlscfg = netceptorint.GenerateClientTLSConfig(s.NodeID())
 	} else {
 		tlscfg = tlscfg.Clone()
 		tlscfg.NextProtos = []string{"netceptor"}

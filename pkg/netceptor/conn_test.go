@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/ansible/receptor/pkg/netceptor"
-	"github.com/ansible/receptor/pkg/netceptor/internal"
+	netceptorint "github.com/ansible/receptor/pkg/netceptor/internal"
 	"github.com/ansible/receptor/pkg/netceptor/mock_netceptor"
 	"github.com/quic-go/quic-go"
 	"go.uber.org/mock/gomock"
@@ -239,7 +239,7 @@ func TestListen(t *testing.T) {
 	netceptorNode := netceptor.New(context.Background(), "node")
 	for _, host := range hosts {
 		t.Run(host, func(t *testing.T) {
-			tlsConfig := GenerateServerTLSConfig(host)
+			tlsConfig := netceptorint.GenerateServerTLSConfig(host)
 			netceptorNode.Listen(host, tlsConfig.Clone())
 		})
 	}
