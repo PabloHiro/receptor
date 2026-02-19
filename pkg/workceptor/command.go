@@ -190,6 +190,7 @@ loop:
 				}
 			} else {
 				writeStatusFailures = 0
+				err = nil
 			}
 		}
 	}
